@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+
+# Local build environment and generated PyInstaller output
+.build-deps/
+build/XboxHDDPrep/
+build/candidate-*/
+dist/
+
+# Per-machine run artifacts
+Logs/
+Reports/
+
+# Editor and operating-system noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
