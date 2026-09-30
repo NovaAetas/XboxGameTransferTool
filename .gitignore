@@ -3,17 +3,35 @@ __pycache__/
 
 # Local build environment and generated PyInstaller output
 .build-deps/
+.gui-build-deps/
+build-dependencies/
+build-cache/
+build-python*/
 build/XboxHDDPrep/
+build/XboxGamePrepTool/
+build/feature-dist/
+build/feature-work/
+build/selection-dist-*/
+build/selection-work-*/
+build/checkbox-dist-*/
+build/checkbox-work-*/
+build/refined-dist-*/
+build/refined-work-*/
+build/summary-dist-*/
+build/summary-work-*/
+build/theme-dist-*/
+build/theme-work-*/
 build/candidate-*/
 dist/
 
 # Per-machine run artifacts
 Logs/
 Reports/
+gui-settings.json
+.gui-settings-*
 
 # Editor and operating-system noise
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-

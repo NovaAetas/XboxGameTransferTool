@@ -11,6 +11,7 @@ import argparse
 from collections import deque
 from dataclasses import dataclass
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -28,7 +29,7 @@ import traceback
 import uuid
 
 
-VERSION = "1.5.0"
+VERSION = "1.8.0"
 LOG_SCHEMA_VERSION = 3
 DEFAULT_SOURCE = Path(r"D:\Xbox360Staging")
 DEFAULT_DESTINATION = Path("E:/")
@@ -281,7 +282,7 @@ class RunRecorder:
             if self.mode == "list":
                 return "Inventory completed without preparing or moving files."
             if self.mode == "cancelled":
-                return "The run was cancelled before any files were prepared or moved."
+                return "The run was cancelled by the user; completed files were left in place."
             return (f"No errors were detected. {transferred} input(s) were transferred and verified; "
                     f"{skipped} existing game folder(s) were skipped without inspection.")
         if source_failures and not operation_failures and not unsupported_failures:
@@ -436,6 +437,16 @@ class RunRecorder:
 
 
 _ACTIVE_RECORDER: RunRecorder | None = None
+_CANCEL_EVENT: threading.Event | None = None
+
+
+class UserCancelled(Exception):
+    """Raised when the GUI requests a cooperative, cleanup-safe cancellation."""
+
+
+def check_cancelled() -> None:
+    if _CANCEL_EVENT is not None and _CANCEL_EVENT.is_set():
+        raise UserCancelled("Run cancelled by the user")
 
 
 def diagnostic_event(event: str, **fields: object) -> None:
@@ -478,6 +489,12 @@ class ContentPlan:
 class CopyOutcome:
     status: str
     sha256: str
+
+
+@dataclass(frozen=True)
+class BatchCopyOutcome:
+    copied_files: int
+    verified_existing_files: int
 
 
 def human_size(size: int) -> str:
@@ -730,6 +747,7 @@ def verify_stfs_integrity(package: Path, volume_type: int | None = None) -> dict
     last_report = started
     try:
         while process.poll() is None or not messages.empty():
+            check_cancelled()
             try:
                 line = messages.get(timeout=0.5)
             except queue.Empty:
@@ -927,7 +945,8 @@ def list_inputs(source: Path) -> list[tuple[Path, str]]:
     return found
 
 
-def read_archive_paths(archive: Path) -> list[str]:
+def read_archive_inventory(archive: Path) -> tuple[list[str], int]:
+    """List archive members and their uncompressed size without extracting them."""
     if not SEVEN_ZIP.is_file():
         raise ApplicationError(f"Bundled 7-Zip is missing: {SEVEN_ZIP}",
                                code="bundled_7zip_missing", details=path_metadata(SEVEN_ZIP))
@@ -969,7 +988,18 @@ def read_archive_paths(archive: Path) -> list[str]:
             code="archiver_protocol_invalid",
             details={"archive": path_metadata(archive), "stdout_tail": stdout_tail},
         ) from exc
-    paths = [line[7:] for line in lines[start:] if line.startswith("Path = ")]
+    entries: list[dict[str, str]] = []
+    entry: dict[str, str] = {}
+    for line in (*lines[start:], ""):
+        if not line:
+            if "Path" in entry:
+                entries.append(entry)
+            entry = {}
+            continue
+        key, separator, value = line.partition(" = ")
+        if separator and key in {"Path", "Size", "Folder", "Attributes"}:
+            entry[key] = value
+    paths = [entry["Path"] for entry in entries]
     if not paths:
         raise SourceError(f"Archive is empty: {archive.name}", code="archive_empty",
                           details={"archive": path_metadata(archive)})
@@ -980,7 +1010,26 @@ def read_archive_paths(archive: Path) -> list[str]:
             raise SourceError(f"Unsafe path inside {archive.name}: {raw}",
                               code="archive_unsafe_path",
                               details={"archive": str(archive), "unsafe_path": raw})
-    return paths
+    total_bytes = 0
+    for entry in entries:
+        is_directory = entry.get("Folder") == "+" or "D" in entry.get("Attributes", "")
+        if is_directory:
+            continue
+        size = entry.get("Size")
+        if size is not None:
+            try:
+                total_bytes += int(size)
+            except ValueError as exc:
+                raise ApplicationError(
+                    f"7-Zip returned an invalid file size for {entry['Path']} in {archive.name}",
+                    code="archiver_protocol_invalid",
+                    details={"archive": str(archive), "entry": entry},
+                ) from exc
+    return paths, total_bytes
+
+
+def read_archive_paths(archive: Path) -> list[str]:
+    return read_archive_inventory(archive)[0]
 
 
 def tree_bytes(folder: Path) -> int:
@@ -993,6 +1042,32 @@ def tree_bytes(folder: Path) -> int:
                 except FileNotFoundError:
                     pass
     return total
+
+
+def estimate_input_bytes(path: Path, kind: str) -> tuple[int, str]:
+    """Estimate output size from metadata/listings without unpacking the input."""
+    if kind == "archive":
+        _paths, total = read_archive_inventory(path)
+        return total, "7-Zip uncompressed member sizes"
+    if kind == "disc image":
+        sizes = read_iso_file_sizes(path)
+        total = sum(
+            size for name, size in sizes.items()
+            if name.split("/", 1)[0].casefold() != "$systemupdate"
+        )
+        return total, "extract-xiso disc listing, excluding system updates"
+    if kind == "Xbox content package":
+        total = path.stat().st_size
+        companion = path.with_name(path.name + ".data")
+        if companion.is_dir():
+            total += tree_bytes(companion)
+        return total, "package and companion data sizes"
+    if path.is_dir():
+        return tree_bytes(path), "source folder file sizes"
+    if path.is_file():
+        return path.stat().st_size, "source file size"
+    raise PrepError(f"Could not estimate output size for {path}",
+                    code="size_estimate_unavailable", details=path_metadata(path))
 
 
 def run_extract(command: list[str], output: Path, label: str, idle_timeout: int) -> None:
@@ -1018,6 +1093,7 @@ def run_extract(command: list[str], output: Path, label: str, idle_timeout: int)
     last_report = 0.0
     try:
         while process.poll() is None:
+            check_cancelled()
             time.sleep(1)
             while not messages.empty():
                 line = messages.get_nowait()
@@ -1033,6 +1109,15 @@ def run_extract(command: list[str], output: Path, label: str, idle_timeout: int)
                     last_progress = now
                     previous_size = size
                 print(f"    {human_size(size)} prepared; elapsed {int(now-started)}s", flush=True)
+                diagnostic_event(
+                    "external_tool_progress",
+                    tool=Path(command[0]).name,
+                    stage="extraction",
+                    label=label,
+                    output=str(output),
+                    output_bytes=size,
+                    elapsed_seconds=int(now - started),
+                )
                 last_report = now
             if now - last_progress > idle_timeout:
                 process.kill()
@@ -1110,7 +1195,8 @@ def archive_extract(archive: Path, output: Path, idle_timeout: int) -> None:
     assert_no_links(output)
 
 
-def iso_extract(image: Path, output: Path, idle_timeout: int) -> None:
+def read_iso_file_sizes(image: Path) -> dict[str, int]:
+    """Read an XISO directory and file sizes without extracting the disc."""
     if not XISO.is_file():
         raise ApplicationError(f"Bundled disc extractor is missing: {XISO}",
                                code="bundled_disc_extractor_missing",
@@ -1164,6 +1250,11 @@ def iso_extract(image: Path, output: Path, idle_timeout: int) -> None:
                           code="disc_empty",
                           details={"image": path_metadata(image),
                                    "listing_tail": listing_text[-2000:]})
+    return expected
+
+
+def iso_extract(image: Path, output: Path, idle_timeout: int) -> None:
+    expected = read_iso_file_sizes(image)
     output.mkdir(parents=True)
     # extract-xiso 2.7.1 can still emit $SystemUpdate while using -s. Extract the
     # complete image, verify the complete listing, then omit updates in game_items.
@@ -1784,6 +1875,222 @@ def worker_copy(source: Path, destination: Path) -> int:
             pass
 
 
+def worker_copy_batch(manifest_path: Path) -> int:
+    """Write every file in one game, verify the batch, then publish new files."""
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    destination_root = Path(manifest["destination"]).resolve()
+    batch_id = str(manifest["batch_id"])
+    raw_items = manifest["items"]
+    if not re.fullmatch(r"[0-9a-f]{32}", batch_id) or not isinstance(raw_items, list) or not raw_items:
+        raise ConfigurationError("Invalid copy batch manifest", code="copy_batch_manifest_invalid")
+
+    plan: list[dict[str, object]] = []
+    for raw in raw_items:
+        source = Path(raw["source"])
+        relative = Path(raw["relative_destination"])
+        size = int(raw["size_bytes"])
+        target = destination_root / relative
+        if (relative.is_absolute() or ".." in relative.parts
+                or not target.resolve().is_relative_to(destination_root)):
+            raise ConfigurationError(
+                f"Unsafe destination in copy batch: {relative}",
+                code="copy_batch_destination_unsafe",
+            )
+        if size < 0 or not source.is_file() or source.stat().st_size != size:
+            raise PrepError(
+                f"Prepared source changed before copying: {source}",
+                code="prepared_source_disappeared",
+                details=path_metadata(source),
+            )
+        plan.append({
+            "source": source,
+            "relative": relative,
+            "target": target,
+            "temp": target.with_name(target.name + f".xboxhddprep-part-{batch_id}"),
+            "size": size,
+            "weight": max(1, size),
+        })
+
+    file_count = len(plan)
+    total_weight = sum(int(item["weight"]) for item in plan)
+    created: list[Path] = []
+    staged: list[dict[str, object]] = []
+    active_target: Path | None = None
+
+    def emit(phase: str, number: int = 0, count: int = 0,
+             progress: float = 0.0, **extra: object) -> None:
+        item = plan[number - 1] if number else None
+        payload = {
+            "phase": phase,
+            "file_number": number,
+            "file_count": file_count,
+            "relative_destination": str(item["relative"]) if item else "",
+            "size_bytes": int(item["size"]) if item else 0,
+            "bytes": count,
+            "progress": round(min(1.0, max(0.0, progress)), 6),
+            **extra,
+        }
+        print(json.dumps(payload), flush=True)
+
+    try:
+        emit("copy_phase_started")
+        copied_weight = 0
+        for number, item in enumerate(plan, 1):
+            source = item["source"]
+            target = item["target"]
+            temp = item["temp"]
+            size = int(item["size"])
+            weight = int(item["weight"])
+            assert isinstance(source, Path) and isinstance(target, Path) and isinstance(temp, Path)
+            active_target = target
+            if target.exists():
+                destination_size = target.stat().st_size
+                if destination_size != size:
+                    raise PrepError(
+                        f"Existing destination has a different size: {target}",
+                        code="destination_conflict_size",
+                        details={"source": str(source), "destination": str(target),
+                                 "source_size_bytes": size,
+                                 "destination_size_bytes": destination_size},
+                    )
+                staged.append({**item, "existing": True, "source_sha256": ""})
+                copied_weight += weight
+                emit("copying", number, size, 0.5 * copied_weight / total_weight, existing=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source_hash = hashlib.sha256()
+            copied = 0
+            last_report = time.monotonic()
+            with source.open("rb") as incoming, temp.open("xb") as outgoing:
+                created.append(temp)
+                emit("copying", number, 0, 0.5 * copied_weight / total_weight)
+                while block := incoming.read(8 * 1024 * 1024):
+                    outgoing.write(block)
+                    source_hash.update(block)
+                    copied += len(block)
+                    now = time.monotonic()
+                    if now - last_report >= 1:
+                        fraction = min(1.0, copied / max(1, size))
+                        emit("copying", number, copied,
+                             0.5 * (copied_weight + weight * fraction) / total_weight)
+                        last_report = now
+                outgoing.flush()
+                os.fsync(outgoing.fileno())
+            if copied != size or temp.stat().st_size != size:
+                raise PrepError(
+                    f"Incomplete copy: {item['relative']}",
+                    code="copy_incomplete",
+                    details={"source": str(source), "destination": str(target),
+                             "expected_bytes": size, "copied_bytes": copied},
+                )
+            staged.append({**item, "existing": False,
+                           "source_sha256": source_hash.hexdigest()})
+            copied_weight += weight
+            emit("copying", number, size, 0.5 * copied_weight / total_weight)
+
+        emit("verification_phase_started", progress=0.5)
+        verified_weight = 0
+        for number, item in enumerate(staged, 1):
+            source = item["source"]
+            target = item["target"]
+            temp = item["temp"]
+            size = int(item["size"])
+            weight = int(item["weight"])
+            existing = bool(item["existing"])
+            assert isinstance(source, Path) and isinstance(target, Path) and isinstance(temp, Path)
+            active_target = target
+
+            def hash_stream(path: Path, phase: str) -> str:
+                digest = hashlib.sha256()
+                counted = 0
+                last_report = time.monotonic()
+                emit(phase, number, 0, 0.5 + 0.45 * verified_weight / total_weight)
+                with path.open("rb") as stream:
+                    while block := stream.read(8 * 1024 * 1024):
+                        digest.update(block)
+                        counted += len(block)
+                        now = time.monotonic()
+                        if now - last_report >= 1:
+                            fraction = min(1.0, counted / max(1, size))
+                            emit(phase, number, counted,
+                                 0.5 + 0.45 * (verified_weight + weight * fraction) / total_weight)
+                            last_report = now
+                if counted != size:
+                    raise PrepError(
+                        f"File size changed during verification: {path}",
+                        code="copy_size_mismatch",
+                        details={"path": str(path), "expected_bytes": size,
+                                 "actual_bytes": counted},
+                    )
+                return digest.hexdigest()
+
+            expected_hash = hash_stream(source, "hashing_existing") if existing else str(item["source_sha256"])
+            actual_hash = hash_stream(target if existing else temp, "verifying")
+            if expected_hash != actual_hash:
+                raise PrepError(
+                    (f"Existing destination differs; refusing to overwrite: {target}"
+                     if existing else f"SHA-256 mismatch after copying: {target}"),
+                    code="destination_conflict_hash" if existing else "copy_hash_mismatch",
+                    details={"source": str(source), "destination": str(target),
+                             "size_bytes": size, "source_sha256": expected_hash,
+                             "destination_sha256": actual_hash},
+                )
+            verified_weight += weight
+            emit("verifying", number, size,
+                 0.5 + 0.45 * verified_weight / total_weight, existing=existing,
+                 source_sha256=expected_hash, destination_sha256=actual_hash)
+
+        emit("commit_phase_started", progress=0.95)
+        copied_files = 0
+        verified_existing_files = 0
+        for number, item in enumerate(staged, 1):
+            target = item["target"]
+            temp = item["temp"]
+            size = int(item["size"])
+            assert isinstance(target, Path) and isinstance(temp, Path)
+            active_target = target
+            if item["existing"]:
+                verified_existing_files += 1
+            else:
+                if target.exists():
+                    raise PrepError(
+                        f"Destination appeared during transfer: {target}",
+                        code="destination_race",
+                        details={"destination": str(target)},
+                    )
+                temp.rename(target)
+                if target.stat().st_size != size:
+                    raise PrepError(
+                        f"Final file size mismatch: {target}",
+                        code="destination_final_size_mismatch",
+                        details={"destination": str(target), "expected_bytes": size},
+                    )
+                copied_files += 1
+            emit("committing", number, size, 0.95 + 0.05 * number / file_count)
+        emit("done", progress=1.0, copied_files=copied_files,
+             verified_existing_files=verified_existing_files)
+        return 0
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) == 112:
+            try:
+                free_bytes = shutil.disk_usage(destination_root).free
+            except OSError:
+                free_bytes = None
+            raise PrepError(
+                f"Destination ran out of space while copying {active_target}",
+                code="destination_no_space",
+                details={"destination": str(active_target),
+                         "free_bytes": free_bytes},
+            ) from exc
+        raise
+    finally:
+        for temp in created:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def self_command() -> list[str]:
     return [str(sys.executable)] if getattr(sys, "frozen", False) else [str(sys.executable), str(Path(__file__).resolve())]
 
@@ -1817,6 +2124,7 @@ def copy_monitored(item: CopyItem, destination_root: Path, idle_timeout: int, nu
     worker_failure: dict[str, object] | None = None
     try:
         while process.poll() is None or not messages.empty():
+            check_cancelled()
             try:
                 line = messages.get(timeout=1)
             except queue.Empty:
@@ -1825,6 +2133,17 @@ def copy_monitored(item: CopyItem, destination_root: Path, idle_timeout: int, nu
                 try:
                     event = json.loads(line)
                     last_progress = time.monotonic()
+                    diagnostic_event(
+                        "copy_worker_progress",
+                        source=str(item.source),
+                        destination=str(target),
+                        relative_destination=str(item.relative_destination),
+                        size_bytes=size,
+                        file_number=number,
+                        file_count=total,
+                        phase=event.get("phase"),
+                        bytes=int(event.get("bytes", 0) or 0),
+                    )
                     if event.get("phase") == "done":
                         result = event.get("result", "verified")
                         digest = event.get("sha256", "")
@@ -1908,6 +2227,169 @@ def copy_monitored(item: CopyItem, destination_root: Path, idle_timeout: int, nu
         reader_thread.join(timeout=2)
         if process.stdout is not None:
             process.stdout.close()
+        for stale in target.parent.glob(target.name + ".xboxhddprep-part-*"):
+            try:
+                stale.unlink()
+            except OSError as exc:
+                diagnostic_event(
+                    "temporary_copy_cleanup_failed",
+                    path=str(stale),
+                    error=repr(exc),
+                )
+
+
+def copy_batch_monitored(
+    items: list[CopyItem], destination_root: Path, idle_timeout: int, work_dir: Path,
+) -> BatchCopyOutcome:
+    """Monitor one isolated worker that copies, verifies, and commits a game."""
+    batch_id = uuid.uuid4().hex
+    manifest_path = work_dir / f"copy-batch-{batch_id}.json"
+    manifest = {
+        "batch_id": batch_id,
+        "destination": str(destination_root),
+        "items": [
+            {"source": str(item.source),
+             "relative_destination": str(item.relative_destination),
+             "size_bytes": item.source.stat().st_size}
+            for item in items
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    command = self_command() + ["--copy-batch-worker", str(manifest_path)]
+    current_input = _ACTIVE_RECORDER.current_input if _ACTIVE_RECORDER else None
+    diagnostic_event(
+        "copy_batch_started", input=current_input, file_count=len(items),
+        total_bytes=sum(record["size_bytes"] for record in manifest["items"]),
+        batch_id=batch_id, idle_timeout_seconds=idle_timeout,
+    )
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, errors="replace", stdin=subprocess.DEVNULL,
+    )
+    messages: queue.Queue[str] = queue.Queue()
+
+    def reader() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            messages.put(line.rstrip())
+
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+    last_progress = last_report = started = time.monotonic()
+    last_phase = "starting"
+    result: dict[str, object] | None = None
+    worker_failure: dict[str, object] | None = None
+    tail: deque[str] = deque(maxlen=10)
+    try:
+        while process.poll() is None or not messages.empty():
+            check_cancelled()
+            try:
+                line = messages.get(timeout=0.5)
+            except queue.Empty:
+                line = ""
+            if line:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    tail.append(line)
+                else:
+                    if isinstance(event, dict):
+                        phase = str(event.get("phase", ""))
+                        last_phase = phase or last_phase
+                        last_progress = time.monotonic()
+                        if phase == "error" and isinstance(event.get("diagnostic"), dict):
+                            worker_failure = event["diagnostic"]
+                        elif phase == "done":
+                            result = event
+                        else:
+                            diagnostic_event("copy_batch_progress", input=current_input, **event)
+                    else:
+                        tail.append(line)
+            now = time.monotonic()
+            if now - last_report >= 10:
+                print(f"  {last_phase.replace('_', ' ').title()}…", flush=True)
+                last_report = now
+            if process.poll() is None and now - last_progress > idle_timeout:
+                process.kill()
+                diagnostic_event(
+                    "copy_batch_stalled", input=current_input, batch_id=batch_id,
+                    last_phase=last_phase, idle_timeout_seconds=idle_timeout,
+                    output_tail=list(tail),
+                )
+                raise PrepError(
+                    f"Transfer made no progress for {idle_timeout} seconds",
+                    code="transfer_stalled",
+                    details={"batch_id": batch_id, "last_phase": last_phase,
+                             "timeout_seconds": idle_timeout},
+                )
+        process.wait()
+        reader_thread.join(timeout=2)
+        while not messages.empty():
+            line = messages.get_nowait()
+            try:
+                event = json.loads(line)
+            except ValueError:
+                tail.append(line)
+                continue
+            if isinstance(event, dict) and event.get("phase") == "done":
+                result = event
+            elif isinstance(event, dict) and event.get("phase") == "error":
+                diagnostic = event.get("diagnostic")
+                if isinstance(diagnostic, dict):
+                    worker_failure = diagnostic
+        if process.returncode or result is None:
+            diagnostic_event(
+                "copy_batch_failed", input=current_input, batch_id=batch_id,
+                exit_code=process.returncode, worker_failure=worker_failure,
+                output_tail=list(tail),
+            )
+            if worker_failure:
+                category = worker_failure.get("category")
+                error_type = SourceError if category == "source_problem" else PrepError
+                raise error_type(
+                    str(worker_failure.get("message") or "The transfer worker failed"),
+                    code=str(worker_failure.get("code") or "copy_batch_worker_failed"),
+                    details={"batch_id": batch_id, "worker_diagnostic": worker_failure,
+                             "worker_exit_code": process.returncode},
+                )
+            raise PrepError(
+                "The transfer worker stopped without completing verification",
+                code="copy_batch_worker_failed",
+                details={"batch_id": batch_id, "worker_exit_code": process.returncode,
+                         "output_tail": list(tail)},
+            )
+        copied = int(result.get("copied_files", -1))
+        existing = int(result.get("verified_existing_files", -1))
+        if copied < 0 or existing < 0 or copied + existing != len(items):
+            raise ApplicationError(
+                "The transfer worker returned inconsistent file counts",
+                code="copy_batch_result_invalid",
+                details={"batch_id": batch_id, "result": result},
+            )
+        diagnostic_event(
+            "copy_batch_finished", input=current_input, batch_id=batch_id,
+            copied_files=copied, verified_existing_files=existing,
+            duration_seconds=round(time.monotonic() - started, 3),
+        )
+        return BatchCopyOutcome(copied, existing)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        reader_thread.join(timeout=2)
+        if process.stdout is not None:
+            process.stdout.close()
+        for item in items:
+            target = destination_root / item.relative_destination
+            temp = target.with_name(target.name + f".xboxhddprep-part-{batch_id}")
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError as exc:
+                diagnostic_event("temporary_copy_cleanup_failed", path=str(temp),
+                                 error=repr(exc))
 
 
 def choose_inputs(inputs: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
@@ -2031,7 +2513,26 @@ def run(args: argparse.Namespace, recorder: RunRecorder) -> int:
                              inventory_by_kind=inventory_by_kind)
         return 0
     recorder.current_stage = "selection"
-    selected = inputs if args.all else choose_inputs(inputs)
+    requested_inputs = getattr(args, "selected_inputs", None)
+    if requested_inputs is not None:
+        requested = {
+            os.path.normcase(str(Path(value).resolve()))
+            for value in requested_inputs
+        }
+        selected = [
+            (path, kind) for path, kind in inputs
+            if os.path.normcase(str(path.resolve())) in requested
+        ]
+        matched = {os.path.normcase(str(path.resolve())) for path, _kind in selected}
+        missing = sorted(requested - matched)
+        if missing:
+            raise ConfigurationError(
+                "The selected game list no longer matches the source. Rescan the source and try again.",
+                code="selected_inputs_changed",
+                details={"missing_selected_inputs": missing},
+            )
+    else:
+        selected = inputs if args.all else choose_inputs(inputs)
     recorder.record("selection_completed", selected_count=len(selected),
                     selected=[{"path": str(path), "kind": kind}
                               for path, kind in selected])
@@ -2075,6 +2576,7 @@ def run(args: argparse.Namespace, recorder: RunRecorder) -> int:
         )
 
     for index, (path, kind) in enumerate(selected, 1):
+        check_cancelled()
         recorder.current_input = str(path)
         recorder.begin_input()
         recorder.current_stage = "destination_folder_precheck"
@@ -2099,6 +2601,39 @@ def run(args: argparse.Namespace, recorder: RunRecorder) -> int:
                       f"({transferred_games} transferred, {skipped_existing} already present, "
                       f"{len(failed_games)} failed)", flush=True)
                 continue
+            recorder.current_stage = "destination_preflight"
+            recorder.record("input_stage", input=str(path), stage=recorder.current_stage)
+            estimated_bytes, estimate_method = estimate_input_bytes(path, kind)
+            free_bytes = shutil.disk_usage(destination).free
+            fits = estimated_bytes <= free_bytes
+            recorder.record(
+                "destination_space_check",
+                input=str(path),
+                estimated_bytes=estimated_bytes,
+                free_bytes=free_bytes,
+                estimate_method=estimate_method,
+                fits=fits,
+                checked_before_extraction=True,
+            )
+            print(
+                f"  Space check before unpacking: estimated {human_size(estimated_bytes)}, "
+                f"{human_size(free_bytes)} available",
+                flush=True,
+            )
+            if not fits:
+                raise PrepError(
+                    f"Not enough free space on {destination}: estimated need "
+                    f"{human_size(estimated_bytes)}, have {human_size(free_bytes)} "
+                    "(checked before unpacking)",
+                    code="destination_no_space",
+                    details={
+                        "destination": str(destination),
+                        "estimated_bytes": estimated_bytes,
+                        "free_bytes": free_bytes,
+                        "estimate_method": estimate_method,
+                        "checked_before_extraction": True,
+                    },
+                )
             print(f"  Preparing {path.name}", flush=True)
             recorder.current_stage = "source_preparation"
             recorder.record("input_stage", input=str(path), stage=recorder.current_stage)
@@ -2122,14 +2657,14 @@ def run(args: argparse.Namespace, recorder: RunRecorder) -> int:
                 print(f"  Ready: {len(items)} files, {human_size(planned_bytes)}", flush=True)
                 recorder.current_stage = "copy_and_verification"
                 recorder.record("input_stage", input=str(path), stage=recorder.current_stage)
-                for file_number, item in enumerate(items, 1):
-                    result = copy_monitored(item, destination, args.idle_timeout,
-                                            file_number, len(items))
-                    if result.status == "already verified":
-                        verified_existing_files += 1
-                    else:
-                        copied_files += 1
-                    update_progress_summary()
+                print(f"  Moving {len(items)} files; verification follows the copy phase",
+                      flush=True)
+                batch_result = copy_batch_monitored(
+                    items, destination, args.idle_timeout, Path(temp_name)
+                )
+                copied_files += batch_result.copied_files
+                verified_existing_files += batch_result.verified_existing_files
+                update_progress_summary()
             handled += 1
             transferred_games += 1
             recorder.current_stage = "input_complete"
@@ -2190,9 +2725,19 @@ def main() -> int:
         help="Skip deep Xbox package hash/filesystem checks (troubleshooting only)",
     )
     parser.add_argument("--copy-worker", nargs=2, metavar=("SOURCE", "DESTINATION"), help=argparse.SUPPRESS)
+    parser.add_argument("--copy-batch-worker", type=Path, metavar="MANIFEST", help=argparse.SUPPRESS)
     parser.add_argument("--no-pause", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    interactive = not (args.all or args.list or args.copy_worker)
+    interactive = not (args.all or args.list or args.copy_worker or args.copy_batch_worker)
+    if args.copy_batch_worker:
+        try:
+            return worker_copy_batch(args.copy_batch_worker)
+        except Exception as exc:
+            diagnostic = exception_diagnostic(exc, "copy_and_verification",
+                                              traceback.format_exc())
+            print(json.dumps({"phase": "error", "diagnostic": diagnostic},
+                             default=str), flush=True)
+            return 1
     if args.copy_worker:
         try:
             return worker_copy(Path(args.copy_worker[0]), Path(args.copy_worker[1]))

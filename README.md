@@ -1,20 +1,51 @@
-# Xbox HDD Prep
+# Xbox Game Prep Tool
 
-A portable Windows tool that prepares Xbox 360 disc images, Xbox Live Arcade
-packages, and original Xbox images for a drive used with Aurora. It copies to a
-locally mounted drive. It does not use FTP.
+A portable Windows tool that detects supported Xbox games, prepares each game,
+and moves it to the correct location on a locally mounted drive used with
+Aurora. It handles Xbox 360 disc images, Xbox Live Arcade packages, Games on
+Demand, downloadable content, and original Xbox images. It does not format,
+partition, erase, or otherwise prepare the drive itself, and it does not use
+FTP.
 
 ## Run it
 
-Open `dist\XboxHDDPrep\Start Xbox HDD Prep.cmd`. It first asks for the source
-and destination directories. Press Enter at either prompt to accept the defaults:
-`D:\Xbox360Staging` for the source and `E:\` for the destination. The app then
-lists detected inputs; select a number, several comma-separated numbers, or `A`
-for all. After selection, it runs without further questions. After each game it
-prints how many have been processed, transferred, and skipped. Every run saves
-a plain-text report in `Reports` and a detailed diagnostic log in `Logs`. The
-command window shows both paths and stays open on the final summary until you
-press a key.
+Open `dist\XboxGamePrepTool\XboxGamePrepTool.exe` or use
+`Start Xbox Game Prep Tool.cmd` in the same folder. Choose one game or a folder
+containing multiple games. The GUI lists each detected game with a native
+checkbox, type, and estimated output size. Select or clear individual games; the
+header checkbox selects or clears all ready games and shows a mixed state for
+partial selections. A compact **Clear selection** link sits beside the selected
+size total beneath the list. Choose the locally mounted Xbox
+360 storage drive, review the summary, then select **Prepare & Move**. Before
+unpacking each selected input, the app compares its estimated output size with
+the destination's current free space and skips inputs that cannot fit. It
+checks the exact prepared size again before copying. Each game reports its own
+checking, preparation, transfer, verification, completion, or error status.
+Select **Activity history…** beside the compact activity area (or from the
+Tools menu) for a readable timeline of major steps and errors. The game list
+shows a short failure reason such as **Not enough space** or **File conflict**;
+select that status for more detail. The storage section compares the selected
+size with the drive's free space. It warns about over-selection but still lets
+you proceed, checking each game before unpacking.
+
+Choose **Options → Dark mode** to switch between light and dark appearances
+instantly, including the game list, activity history, and end-of-run summary.
+The same toggle is available in the Options dialog. Appearance changes do not
+interrupt a transfer or clear your selections. The preference is saved in
+`gui-settings.json` beside the application and remembered on the next launch.
+Windows-managed file pickers and system message boxes use the Windows theme.
+
+Every run saves a plain-text report in `Reports` and a detailed diagnostic log
+in `Logs`. A cancelled run also produces both files. Cancellation stops the
+active helper safely; already completed files remain in place and temporary
+partial copies are never promoted to final files.
+
+The original command-line interface remains available in
+`dist\XboxHDDPrep\Start Xbox HDD Prep.cmd`. It first asks for the source and
+destination directories. Press Enter at either prompt to accept the defaults:
+`D:\Xbox360Staging` for the source and `E:\` for the destination. It then lists
+detected inputs; select a number, several comma-separated numbers, or `A` for
+all.
 
 The portable `dist\XboxHDDPrep` folder includes the application, extractors,
 and content verifier. Keep the entire folder together. Python, 7-Zip, and
@@ -120,10 +151,11 @@ checked SVOD data hashes, and it does not label the package corrupt for this
 limitation. A missing, stalled, crashed, or unparseable verifier is reported as
 an application/tool problem rather than evidence of a bad source file.
 
-Each output file is written to a temporary sibling on the destination drive.
-The app checks its length and SHA-256 hash against the source, then renames it
-to its final name. Existing files are also compared by SHA-256 before being
-skipped during a transfer. A mismatch is never overwritten. If one game fails
+For each game, the app writes all new output files to temporary siblings on the
+destination drive first. It then checks the length and SHA-256 hash of every
+file in that game, including any existing destination files. Only after the
+whole batch passes verification are new files renamed to their final names.
+A mismatch is never overwritten. If one game fails
 extraction, copying, or verification, the app records its error and continues
 with the next selected game. The final report lists every failed game and its
 error; the run exits with a nonzero status if any game failed. A matching game

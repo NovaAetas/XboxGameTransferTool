@@ -439,6 +439,60 @@ class PrepTests(unittest.TestCase):
         self.assertIn("not proven bad", report.lower())
         self.assertIn("destination_conflict_hash", report)
 
+    def test_batch_copy_stages_all_files_before_verifying_and_committing(self):
+        source = self.root / "batch-source"
+        destination = self.root / "batch-destination"
+        work = self.root / "batch-work"
+        source.mkdir()
+        destination.mkdir()
+        work.mkdir()
+        (source / "first.bin").write_bytes(b"first" * 100)
+        (source / "second.bin").write_bytes(b"second" * 100)
+        items = [app.CopyItem(source / name, Path("Games") / name)
+                 for name in ("first.bin", "second.bin")]
+        recorder = app.RunRecorder(self.root / "batch-artifacts")
+        previous = app._ACTIVE_RECORDER
+        app._ACTIVE_RECORDER = recorder
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                outcome = app.copy_batch_monitored(items, destination, 30, work)
+        finally:
+            app._ACTIVE_RECORDER = previous
+            recorder.finalize(0)
+
+        self.assertEqual((outcome.copied_files, outcome.verified_existing_files), (2, 0))
+        for item in items:
+            self.assertEqual((destination / item.relative_destination).read_bytes(),
+                             item.source.read_bytes())
+        events = [json.loads(line) for line in recorder.log_path.read_text(
+            encoding="utf-8").splitlines()]
+        phases = [event["phase"] for event in events
+                  if event["event"] == "copy_batch_progress"]
+        self.assertLess(max(index for index, phase in enumerate(phases)
+                            if phase == "copying"), phases.index("verification_phase_started"))
+        self.assertLess(max(index for index, phase in enumerate(phases)
+                            if phase == "verifying"), phases.index("commit_phase_started"))
+        self.assertFalse(list(destination.rglob("*.xboxhddprep-part-*")))
+
+    def test_batch_conflict_does_not_publish_other_staged_files(self):
+        source = self.root / "conflict-batch-source"
+        destination = self.root / "conflict-batch-destination"
+        work = self.root / "conflict-batch-work"
+        source.mkdir()
+        destination.mkdir()
+        work.mkdir()
+        (source / "new.bin").write_bytes(b"new payload")
+        (source / "conflict.bin").write_bytes(b"source")
+        (destination / "conflict.bin").write_bytes(b"target")
+        items = [app.CopyItem(source / name, Path(name))
+                 for name in ("new.bin", "conflict.bin")]
+        with self.assertRaises(app.PrepError) as raised:
+            app.copy_batch_monitored(items, destination, 30, work)
+        self.assertEqual(raised.exception.code, "destination_conflict_hash")
+        self.assertFalse((destination / "new.bin").exists())
+        self.assertEqual((destination / "conflict.bin").read_bytes(), b"target")
+        self.assertFalse(list(destination.rglob("*.xboxhddprep-part-*")))
+
     def test_disc_image_extracts_to_game_folder(self):
         game = self.root / "synthetic_game"
         game.mkdir()
