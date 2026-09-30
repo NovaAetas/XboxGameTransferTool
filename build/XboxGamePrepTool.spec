@@ -8,6 +8,7 @@ a = Analysis(
     datas=[
         ('../tools', 'tools'),
         ('../README.md', '.'),
+        ('../LICENSE', '.'),
         ('../Start Xbox Game Prep Tool.cmd', '.'),
     ],
     hiddenimports=['tkinter', 'tkinter.ttk', 'xbox_hdd_prep'],

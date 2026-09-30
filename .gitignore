@@ -21,6 +21,9 @@ build/summary-dist-*/
 build/summary-work-*/
 build/theme-dist-*/
 build/theme-work-*/
+build/alpha-dist-*/
+build/alpha-work-*/
+build/alpha-assets-*/
 build/candidate-*/
 dist/
 
