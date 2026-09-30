@@ -2,7 +2,7 @@
 
 Portable Windows tool for preparing Xbox 360, original Xbox, and XBLA content for an Aurora-ready USB drive.
 
-It detects supported inputs, checks available space before preparing them, places content in the expected folders, and verifies the transfer.
+It detects supported inputs, checks available space before preparing them, places content in the expected folders, and verifies the transfer. No bells and whistles or nice pictures.
 
 ![Xbox Game Prep Tool](https://github.com/user-attachments/assets/40770418-f785-42f9-b532-890ee2b07410)
 
