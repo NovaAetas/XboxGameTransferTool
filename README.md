@@ -21,7 +21,3 @@ It detects supported inputs, checks available space before preparing them, place
 3. Open `XboxGamePrepTool.exe`, choose the source and destination, select the games, then choose **Prepare & move**.
 
 No installation or FTP is required. The app does not format drives. Logs, reports, and settings are saved beside the executable.
-
-![Game selection and transfer](https://github.com/user-attachments/assets/aad3c4bf-8809-4242-bda4-d81ede647f90)
-
-[MIT license](LICENSE). License notices for bundled utilities are included in `_internal/tools` in the portable download.
