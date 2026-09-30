@@ -189,7 +189,7 @@ class GuiSupportTests(unittest.TestCase):
             self.assertIn("A test activity entry", app.activity.get("1.0", "end"))
             self.assertEqual(summary.cget("background"), palette["BG"])
             style = ttk.Style(root)
-            self.assertEqual(style.lookup("Menu.TMenubutton", "background"), palette["BG"])
+            self.assertEqual(style.lookup("Menu.TButton", "background"), palette["BG"])
             self.assertFalse(root.cget("menu"))
             self.assertEqual(style.lookup("TEntry", "fieldbackground"), palette["INPUT"])
             self.assertEqual(style.lookup("TCombobox", "fieldbackground", ("readonly",)),
@@ -220,6 +220,9 @@ class GuiSupportTests(unittest.TestCase):
                  gui.DetectedGame(self.root / "Broken", "disc image", "Disc image", status="Scan issue")]
         app._finish_scan(self.root, games)
         root.update()
+        self.assertEqual(app.summary_total.get(), "3 found")
+        self.assertEqual(app.top_status.get(), "Review games")
+        self.assertEqual(app.selection_total.get(), "2 selected • ~2.00 KiB")
         ready_keys = {gui.normal_path(game.path) for game in games[:2]}
         first = app.rows_by_path[gui.normal_path(games[0].path)]
         self.assertTrue(app.select_all_checkbox.instate(["selected", "!alternate", "!disabled"]))
@@ -236,7 +239,7 @@ class GuiSupportTests(unittest.TestCase):
         app.clear_selection_button.invoke()
         self.assertFalse(app.selected_paths)
         self.assertTrue(app.select_all_checkbox.instate(["!selected", "!alternate"]))
-        self.assertIn("0 B", app.selection_total.get())
+        self.assertEqual(app.selection_total.get(), "0 selected")
         app.select_all_checkbox.invoke()
         for busy_flag in ("scanning", "running"):
             setattr(app, busy_flag, True)
@@ -279,6 +282,28 @@ class GuiSupportTests(unittest.TestCase):
         root.update()
         self.assertGreater(app.game_canvas.yview()[0], 0.0)
         self.assertLess(app.page_canvas.yview()[1], 1.0)
+
+    @unittest.skipUnless(os.environ.get("XBOX_GUI_LAYOUT_TESTS") == "1",
+                         "Set XBOX_GUI_LAYOUT_TESTS=1 for the off-screen Tk layout check")
+    def test_wide_layout_stays_compact_and_empty_state_has_no_sidebar(self):
+        with patch.object(gui, "available_destination_drives", return_value=[]), \
+                patch.object(engine, "ROOT", self.root):
+            root = tk.Tk()
+            self.addCleanup(self.destroy_tk_root, root)
+            root.geometry("2400x900+5000+5000")
+            app = gui.GamePrepApp(root)
+        root.update()
+
+        page_width = app.page_canvas.winfo_width()
+        content_width = int(float(app.page_canvas.itemcget(app.page_window, "width")))
+        content_x = app.page_canvas.coords(app.page_window)[0]
+        self.assertLessEqual(content_width, 1400)
+        self.assertAlmostEqual(content_x, (page_width - content_width) / 2, delta=2)
+        self.assertEqual(app.summary_total.get(), "")
+        self.assertFalse(app.selection_controls.winfo_ismapped())
+        gap = app.start_button.winfo_rootx() - (app.action_heading.winfo_rootx()
+                                               + app.action_heading.winfo_width())
+        self.assertLess(gap, 80)
 
 
 if __name__ == "__main__":

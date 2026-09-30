@@ -29,7 +29,7 @@ import traceback
 import uuid
 
 
-VERSION = "0.5.0-alpha.1"
+VERSION = "0.6.0-alpha"
 LOG_SCHEMA_VERSION = 3
 DEFAULT_SOURCE = Path(r"D:\Xbox360Staging")
 DEFAULT_DESTINATION = Path("E:/")

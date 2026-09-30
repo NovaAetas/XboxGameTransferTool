@@ -274,10 +274,7 @@ def available_destination_drives() -> list[DriveChoice]:
         except OSError:
             continue
         filesystem = engine.drive_format(root) or "Unknown format"
-        label = (
-            f"{root}   {engine.human_size(usage.free)} free of "
-            f"{engine.human_size(usage.total)}   ({filesystem})"
-        )
+        label = f"{root}   {engine.human_size(usage.free)} free   ({filesystem})"
         choices.append(DriveChoice(root, label, usage.free, usage.total, filesystem))
     return choices
 
@@ -328,7 +325,7 @@ class OptionsDialog(tk.Toplevel):
 
         body = ttk.Frame(self, padding=16)
         body.grid(sticky="nsew")
-        ttk.Label(body, text="Idle timeout (seconds):").grid(row=0, column=0, sticky="w")
+        ttk.Label(body, text="Idle timeout (s)").grid(row=0, column=0, sticky="w")
         self.timeout = tk.StringVar(value=str(parent.idle_timeout))
         timeout_entry = ttk.Entry(body, width=12, textvariable=self.timeout)
         timeout_entry.grid(row=0, column=1, padx=(12, 0), sticky="w")
@@ -336,11 +333,11 @@ class OptionsDialog(tk.Toplevel):
         self.verify = tk.BooleanVar(value=parent.verify_integrity)
         ttk.Checkbutton(
             body,
-            text="Deep-check Xbox content packages (recommended)",
+            text="Deep content check",
             variable=self.verify,
         ).grid(row=1, column=0, columnspan=2, pady=(14, 4), sticky="w")
 
-        ttk.Label(body, text="Temporary work folder (optional):").grid(
+        ttk.Label(body, text="Work folder (optional)").grid(
             row=2, column=0, pady=(10, 0), sticky="w"
         )
         self.work_dir = tk.StringVar(value=str(parent.work_dir or ""))
@@ -350,23 +347,8 @@ class OptionsDialog(tk.Toplevel):
         ttk.Button(body, text="Browse…", command=self.choose_work_dir).grid(
             row=3, column=1, padx=(8, 0)
         )
-        ttk.Label(
-            body,
-            text="Leave the work folder blank for an automatic location beside the source.",
-            style="Muted.TLabel",
-        ).grid(row=4, column=0, columnspan=2, pady=(4, 0), sticky="w")
-
-        ttk.Separator(body).grid(row=5, column=0, columnspan=2, sticky="ew", pady=16)
-        ttk.Label(body, text="Appearance", style="Section.TLabel").grid(
-            row=6, column=0, columnspan=2, sticky="w")
-        ttk.Checkbutton(body, text="Dark mode", variable=parent.dark_mode,
-                        command=parent.change_appearance).grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(8, 4))
-        ttk.Label(body, text="Appearance changes apply immediately and are remembered.",
-                  style="Muted.TLabel").grid(
-            row=8, column=0, columnspan=2, sticky="w")
         buttons = ttk.Frame(body)
-        buttons.grid(row=9, column=0, columnspan=2, pady=(18, 0), sticky="e")
+        buttons.grid(row=4, column=0, columnspan=2, pady=(18, 0), sticky="e")
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="OK", command=self.save).pack(side="right", padx=(0, 8))
         timeout_entry.focus_set()
@@ -375,7 +357,7 @@ class OptionsDialog(tk.Toplevel):
         parent._theme_window(self)
 
     def choose_work_dir(self) -> None:
-        chosen = filedialog.askdirectory(title="Choose a temporary work folder", parent=self)
+        chosen = filedialog.askdirectory(title="Choose work folder", parent=self)
         if chosen:
             self.work_dir.set(chosen)
 
@@ -383,12 +365,12 @@ class OptionsDialog(tk.Toplevel):
         try:
             timeout = int(self.timeout.get())
         except ValueError:
-            messagebox.showerror("Invalid timeout", "Enter a whole number of seconds.", parent=self)
+            messagebox.showerror("Invalid timeout", "Enter a whole number.", parent=self)
             return
         if not 30 <= timeout <= 21600:
             messagebox.showerror(
                 "Invalid timeout",
-                "Choose a timeout between 30 seconds and 6 hours.",
+                "Use 30 seconds–6 hours.",
                 parent=self,
             )
             return
@@ -556,10 +538,10 @@ class GamePrepApp:
                                               ("active", self.HOVER)],
                   foreground=[("disabled", self.MUTED)],
                   arrowcolor=[("disabled", self.MUTED)])
-        style.configure("Menu.TMenubutton", background=self.BG, foreground=self.TEXT,
-                        padding=(10, 5), borderwidth=0, relief="flat")
-        style.map("Menu.TMenubutton", background=[("active", self.HOVER),
-                                                   ("pressed", self.PRESSED)])
+        style.configure("Menu.TButton", background=self.BG, foreground=self.TEXT,
+                        padding=(9, 4), borderwidth=0, relief="flat")
+        style.map("Menu.TButton", background=[("active", self.HOVER),
+                                               ("pressed", self.PRESSED)])
         style.configure("TScrollbar", background=self.HEADER, troughcolor=self.BG,
                         arrowcolor=self.MUTED, bordercolor=self.BG,
                         lightcolor=self.HEADER, darkcolor=self.HEADER, gripcount=0)
@@ -649,6 +631,18 @@ class GamePrepApp:
         widget.columnconfigure(3, minsize=105, weight=0)
         widget.columnconfigure(4, minsize=165, weight=0)
 
+    def _show_empty_games(self, message: str) -> None:
+        for child in self.game_rows.winfo_children():
+            child.destroy()
+        self.game_canvas.configure(height=165)
+        self.selection_controls.grid_remove()
+        empty_label = ttk.Label(
+            self.game_rows, text=message, style="Muted.TLabel",
+            anchor="center", padding=(0, 48),
+        )
+        empty_label.grid(row=0, column=0, sticky="ew")
+        self.game_canvas.yview_moveto(0)
+
     def _on_game_rows_configure(self, _event: tk.Event) -> None:
         bounds = self.game_canvas.bbox("all") or (0, 0, 0, 0)
         self.game_canvas.configure(scrollregion=bounds)
@@ -674,7 +668,10 @@ class GamePrepApp:
         self.page_canvas.configure(scrollregion=self.page_canvas.bbox("all"))
 
     def _on_page_canvas_configure(self, event: tk.Event) -> None:
-        self.page_canvas.itemconfigure(self.page_window, width=event.width)
+        content_width = min(event.width, 1400)
+        self.page_canvas.itemconfigure(self.page_window, width=content_width)
+        self.page_canvas.coords(self.page_window, max(0, (event.width - content_width) // 2), 0)
+        self.page_canvas.configure(scrollregion=self.page_canvas.bbox("all"))
 
     def _set_game_checkboxes_enabled(self, enabled: bool) -> None:
         for game in self.games:
@@ -696,19 +693,19 @@ class GamePrepApp:
     def _build_menu(self) -> None:
         menu = tk.Menu(self.root)
         file_menu = tk.Menu(menu, tearoff=False)
-        file_menu.add_command(label="Choose game folder…", command=self.choose_source_folder)
-        file_menu.add_command(label="Choose game file…", command=self.choose_source_file)
+        file_menu.add_command(label="Choose folder", command=self.choose_source_folder)
+        file_menu.add_command(label="Choose file", command=self.choose_source_file)
         file_menu.add_separator()
-        file_menu.add_command(label="Open reports folder", command=self.open_reports_folder)
-        file_menu.add_command(label="Open diagnostic logs folder", command=self.open_logs_folder)
+        file_menu.add_command(label="Open reports", command=self.open_reports_folder)
+        file_menu.add_command(label="Open logs", command=self.open_logs_folder)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.on_close)
         menu.add_cascade(label="File", menu=file_menu)
 
         tools_menu = tk.Menu(menu, tearoff=False)
-        tools_menu.add_command(label="Rescan source", command=self.start_scan)
+        tools_menu.add_command(label="Rescan", command=self.start_scan)
         tools_menu.add_command(label="Refresh drives", command=self.refresh_drives)
-        tools_menu.add_command(label="Activity history…", command=self.show_activity_window)
+        tools_menu.add_command(label="History…", command=self.show_activity_window)
         menu.add_cascade(label="Tools", menu=tools_menu)
 
         options_menu = tk.Menu(menu, tearoff=False)
@@ -729,13 +726,14 @@ class GamePrepApp:
             ("File", file_menu), ("Tools", tools_menu),
             ("Options", options_menu), ("Help", help_menu),
         )):
-            button = ttk.Menubutton(menu_bar, text=name, menu=popup, underline=0,
-                                    takefocus=True, style="Menu.TMenubutton")
-            button.grid(row=0, column=column, sticky="w")
-            def open_menu(_event: tk.Event, target=button, dropdown=popup) -> str:
+            button = ttk.Button(menu_bar, text=name, takefocus=True, style="Menu.TButton")
+            button.grid(row=0, column=column, padx=(0, 2), sticky="w")
+            def open_menu(_event: tk.Event | None = None,
+                          target=button, dropdown=popup) -> str:
                 dropdown.tk_popup(target.winfo_rootx(),
                                   target.winfo_rooty() + target.winfo_height())
                 return "break"
+            button.configure(command=open_menu)
             self.root.bind(f"<Alt-{name[0].lower()}>", open_menu)
 
     def _build_ui(self) -> None:
@@ -762,14 +760,12 @@ class GamePrepApp:
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="Xbox Game Prep", style="Title.TLabel").grid(
             row=0, column=0, sticky="w")
-        ttk.Label(header, text="Prepare games for locally connected Xbox 360 storage",
-                  style="Shell.TLabel").grid(row=1, column=0, sticky="w", pady=(1, 0))
         status = ttk.Frame(header, style="Shell.TFrame")
-        status.grid(row=0, column=1, rowspan=2, sticky="e")
+        status.grid(row=0, column=1, sticky="e")
         self.status_dot = tk.Label(status, text="●", foreground=self.GREEN,
                                    background=self.BG, font=("Segoe UI", 12))
         self.status_dot.pack(side="left")
-        self.top_status = tk.StringVar(value="Ready — choose a game or folder")
+        self.top_status = tk.StringVar(value="Ready")
         ttk.Label(status, textvariable=self.top_status, style="Status.TLabel",
                   wraplength=420, justify="right").pack(
             side="left", padx=(7, 0))
@@ -782,7 +778,7 @@ class GamePrepApp:
         footer = ttk.Frame(container, style="Shell.TFrame")
         footer.grid(row=5, column=0, sticky="ew", pady=(8, 0))
         footer.columnconfigure(0, weight=1)
-        self.footer_status = tk.StringVar(value="No active task")
+        self.footer_status = tk.StringVar(value="")
         ttk.Label(footer, textvariable=self.footer_status, style="Shell.TLabel").grid(
             row=0, column=0, sticky="w")
         ttk.Label(footer, text=f"v{engine.VERSION}", style="Shell.TLabel").grid(
@@ -792,9 +788,13 @@ class GamePrepApp:
         frame = ttk.Frame(parent, padding=16, style="Card.TFrame")
         frame.grid(row=1, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(4, weight=1)
-        ttk.Label(frame, text="01  Choose games", style="Section.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 10))
+        frame.rowconfigure(2, weight=1)
+        heading_row = ttk.Frame(frame)
+        heading_row.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ttk.Label(heading_row, text="01  Games", style="Section.TLabel").pack(side="left")
+        self.summary_total = tk.StringVar(value="")
+        ttk.Label(heading_row, textvariable=self.summary_total, style="Muted.TLabel").pack(
+            side="left", padx=(12, 0))
 
         source_row = ttk.Frame(frame)
         source_row.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -805,24 +805,15 @@ class GamePrepApp:
         self.source_entry.bind("<Return>", lambda _event: self.start_scan())
 
         browse_menu = tk.Menu(self.root, tearoff=False)
-        browse_menu.add_command(label="Choose a folder…", command=self.choose_source_folder)
-        browse_menu.add_command(label="Choose one file…", command=self.choose_source_file)
+        browse_menu.add_command(label="Choose folder", command=self.choose_source_folder)
+        browse_menu.add_command(label="Choose file", command=self.choose_source_file)
         self.browse_button = ttk.Menubutton(source_row, text="Browse…", menu=browse_menu, width=12)
         self.browse_button.grid(row=0, column=1, padx=(8, 0))
         self.rescan_button = ttk.Button(source_row, text="Rescan", command=self.start_scan, width=12)
         self.rescan_button.grid(row=0, column=2, padx=(8, 0))
 
-        ttk.Label(
-            frame,
-            text="Choose a source, then tick the games to transfer. Click a red status for details.",
-            style="Muted.TLabel",
-        ).grid(row=2, column=0, columnspan=2, pady=(6, 10), sticky="w")
-
-        ttk.Label(frame, text="Detected games", style="Heading.TLabel").grid(
-            row=3, column=0, sticky="w", pady=(0, 5)
-        )
         body = ttk.Frame(frame)
-        body.grid(row=4, column=0, columnspan=2, sticky="nsew")
+        body.grid(row=2, column=0, columnspan=2, pady=(10, 0), sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
 
@@ -865,7 +856,7 @@ class GamePrepApp:
         list_frame.rowconfigure(0, weight=1)
         self.game_canvas = tk.Canvas(
             list_frame,
-            height=250,
+            height=165,
             highlightthickness=1,
             highlightbackground=self.BORDER,
             background=self.SURFACE,
@@ -887,49 +878,27 @@ class GamePrepApp:
         list_scroll.bind("<MouseWheel>", self._on_game_list_mousewheel)
         self.game_canvas.configure(yscrollcommand=list_scroll.set)
 
-        selection_controls = ttk.Frame(table_frame)
-        selection_controls.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.selection_controls = ttk.Frame(table_frame)
+        self.selection_controls.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.clear_selection_button = ttk.Button(
-            selection_controls, text="Clear selection", style="Link.TButton",
+            self.selection_controls, text="Clear", style="Link.TButton",
             command=lambda: self._set_all_selected(False), state="disabled",
             cursor="hand2")
         self.clear_selection_button.pack(side="right", padx=(12, 0))
-        self.selection_total = tk.StringVar(value="Selected: 0 games • 0 B estimated")
+        self.selection_total = tk.StringVar(value="0 selected")
         ttk.Label(
-            selection_controls,
+            self.selection_controls,
             textvariable=self.selection_total,
             font=("Segoe UI", 10, "bold"),
         ).pack(side="right", padx=(8, 0))
-
-        sidebar = ttk.Frame(body, padding=(14, 12), style="Card.TFrame")
-        sidebar.grid(row=0, column=1, padx=(12, 0), sticky="nsew")
-        sidebar.columnconfigure(0, weight=1)
-        ttk.Label(sidebar, text="Scan summary", style="Heading.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        self.summary_total = tk.StringVar(value="No games detected")
-        ttk.Label(sidebar, textvariable=self.summary_total, font=("Segoe UI", 13, "bold")).grid(
-            row=1, column=0, pady=(8, 10), sticky="w"
-        )
-        self.summary_breakdown = ttk.Frame(sidebar)
-        self.summary_breakdown.grid(row=2, column=0, sticky="new")
-        ttk.Separator(sidebar).grid(row=3, column=0, pady=(12, 8), sticky="ew")
-        self.scan_state = tk.StringVar(value="Waiting for selection")
-        self.scan_state_label = ttk.Label(sidebar, textvariable=self.scan_state)
-        self.scan_state_label.grid(row=4, column=0, sticky="w")
-
-        self.scan_activity = tk.StringVar(value="Choose a game source to begin.")
-        ttk.Label(frame, textvariable=self.scan_activity, style="Muted.TLabel").grid(
-            row=5, column=0, columnspan=2, pady=(9, 0), sticky="w"
-        )
+        self._show_empty_games("Choose folder or file")
 
     def _build_destination_section(self, parent: ttk.Frame) -> None:
         frame = ttk.Frame(parent, padding=16, style="Card.TFrame")
         frame.grid(row=2, column=0, pady=(11, 0), sticky="ew")
-        frame.columnconfigure(0, weight=3)
-        frame.columnconfigure(2, weight=2)
-        ttk.Label(frame, text="02  Choose Xbox 360 storage", style="Section.TLabel").grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, 9))
+        frame.columnconfigure(0, weight=1)
+        ttk.Label(frame, text="02  Storage", style="Section.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 9))
 
         self.destination_var = tk.StringVar()
         self.destination_combo = ttk.Combobox(frame, textvariable=self.destination_var)
@@ -940,52 +909,20 @@ class GamePrepApp:
         self.refresh_button = ttk.Button(frame, text="Refresh", command=self.refresh_drives, width=12)
         self.refresh_button.grid(row=1, column=1, padx=(8, 12))
 
-        details = ttk.Frame(frame)
-        details.grid(row=1, column=2, rowspan=2, sticky="nsew")
-        self.drive_name = tk.StringVar(value="—")
-        self.drive_free = tk.StringVar(value="—")
-        self.drive_destination = tk.StringVar(value="Automatic")
-        for row, (label, variable) in enumerate((
-            ("Drive:", self.drive_name),
-            ("Free space:", self.drive_free),
-            ("Destination:", self.drive_destination),
-        )):
-            ttk.Label(details, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Label(details, textvariable=variable).grid(row=row, column=1, padx=(14, 0), sticky="w")
-
-        ttk.Label(
-            frame,
-            text="Each game will be placed in its correct folder automatically.",
-            style="Muted.TLabel",
-        ).grid(row=2, column=0, columnspan=2, pady=(6, 0), sticky="w")
-        self.capacity_note = tk.StringVar(value="Select games and a drive to compare space.")
+        self.capacity_note = tk.StringVar(value="")
         self.capacity_label = ttk.Label(frame, textvariable=self.capacity_note,
                                         style="Muted.TLabel")
-        self.capacity_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.capacity_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.capacity_label.grid_remove()
 
     def _build_action_section(self, parent: ttk.Frame) -> None:
         frame = ttk.Frame(parent, padding=16, style="Card.TFrame")
         frame.grid(row=3, column=0, pady=(11, 0), sticky="ew")
-        frame.columnconfigure(1, weight=1)
-        ttk.Label(frame, text="03  Prepare and move", style="Section.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-        ttk.Label(frame, text="Games:").grid(row=1, column=0, sticky="w")
-        self.action_games = tk.StringVar(value="Not selected")
-        ttk.Label(frame, textvariable=self.action_games, font=("Segoe UI", 10, "bold")).grid(
-            row=1, column=1, padx=(14, 0), sticky="w"
-        )
-        ttk.Label(frame, text="Destination:").grid(row=2, column=0, pady=(5, 0), sticky="w")
-        self.action_destination = tk.StringVar(value="Not selected")
-        ttk.Label(
-            frame,
-            textvariable=self.action_destination,
-            font=("Segoe UI", 10, "bold"),
-            width=1,
-        ).grid(row=2, column=1, padx=(14, 20), pady=(5, 0), sticky="ew")
+        self.action_heading = ttk.Label(frame, text="03  Transfer", style="Section.TLabel")
+        self.action_heading.grid(row=0, column=0, sticky="w")
 
         action_buttons = ttk.Frame(frame)
-        action_buttons.grid(row=0, column=2, rowspan=3, sticky="e")
+        action_buttons.grid(row=0, column=1, padx=(22, 0), sticky="w")
         self.start_button = ttk.Button(
             action_buttons,
             text="Prepare & move",
@@ -995,8 +932,6 @@ class GamePrepApp:
             width=23,
         )
         self.start_button.pack(fill="x")
-        self.options_button = ttk.Button(action_buttons, text="Options…", command=self.show_options)
-        self.options_button.pack(fill="x", pady=(6, 0))
 
     def _build_progress_section(self, parent: ttk.Frame) -> None:
         frame = ttk.Frame(parent, padding=16, style="Card.TFrame")
@@ -1004,7 +939,7 @@ class GamePrepApp:
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(3, weight=1)
 
-        ttk.Label(frame, text="Overall progress", style="Heading.TLabel").grid(
+        ttk.Label(frame, text="Progress", style="Heading.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         progress_row = ttk.Frame(frame)
@@ -1025,12 +960,12 @@ class GamePrepApp:
         activity_header = ttk.Frame(frame)
         activity_header.grid(row=2, column=0, pady=(9, 3), sticky="ew")
         activity_header.columnconfigure(0, weight=1)
-        ttk.Label(activity_header, text="Current activity", style="Heading.TLabel").grid(
+        ttk.Label(activity_header, text="Activity", style="Heading.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Button(
             activity_header,
-            text="Activity history…",
+            text="History…",
             command=self.show_activity_window,
         ).grid(
             row=0, column=1, sticky="e"
@@ -1049,12 +984,11 @@ class GamePrepApp:
             state="disabled",
         )
         self.activity.grid(row=3, column=0, sticky="nsew")
-        self._append_activity("Waiting for a game source.")
 
     def choose_source_folder(self) -> None:
         if self.running:
             return
-        chosen = filedialog.askdirectory(title="Choose a game or collection folder")
+        chosen = filedialog.askdirectory(title="Choose folder")
         if chosen:
             self.source_var.set(chosen)
             self.start_scan()
@@ -1063,9 +997,9 @@ class GamePrepApp:
         if self.running:
             return
         chosen = filedialog.askopenfilename(
-            title="Choose a game file",
+            title="Choose file",
             filetypes=(
-                ("Supported game files", "*.iso *.zip *.7z *.rar"),
+                ("Game files", "*.iso *.zip *.7z *.rar"),
                 ("All files", "*.*"),
             ),
         )
@@ -1078,11 +1012,11 @@ class GamePrepApp:
             return
         raw = self.source_var.get().strip().strip('"')
         if not raw:
-            messagebox.showinfo("Choose games", "Choose one game or a folder to scan first.")
+            messagebox.showinfo("Choose source", "Choose a folder or file.")
             return
         source = Path(raw)
         if not source.exists():
-            messagebox.showerror("Source unavailable", f"The selected source does not exist:\n\n{source}")
+            messagebox.showerror("Source not found", str(source))
             return
         self.scanning = True
         self.scanned_source = None
@@ -1090,14 +1024,11 @@ class GamePrepApp:
         self.selected_paths.clear()
         self.rows_by_path.clear()
         self.game_diagnostics.clear()
-        for child in self.game_rows.winfo_children():
-            child.destroy()
+        self._show_empty_games("Scanning…")
         self._update_selection_total()
         self._render_summary([])
-        self.scan_state.set("Scanning…")
-        self.scan_activity.set(f"Scanning {source.name or source}…")
-        self.top_status.set("Scanning for games…")
-        self.footer_status.set("Scanning source")
+        self.top_status.set("Scanning…")
+        self.footer_status.set("")
         self.status_dot.configure(foreground=self.AMBER)
         self.rescan_button.configure(state="disabled")
         self.browse_button.configure(state="disabled")
@@ -1128,6 +1059,13 @@ class GamePrepApp:
         self.rows_by_path.clear()
         self.rescan_button.configure(state="normal")
         self.browse_button.configure(state="normal")
+        if games:
+            for child in self.game_rows.winfo_children():
+                child.destroy()
+            self.game_canvas.configure(height=250)
+            self.selection_controls.grid()
+        else:
+            self._show_empty_games("No games found")
 
         problem_count = 0
         for index, game in enumerate(games):
@@ -1196,20 +1134,12 @@ class GamePrepApp:
         self._render_summary(games)
         ready_count = len(games) - problem_count
         if problem_count:
-            self.scan_state.set(f"{problem_count} item(s) need attention")
-            self.scan_activity.set(
-                f"Scan finished: {ready_count} ready, {problem_count} need attention."
-            )
-            self.top_status.set(f"Scan finished — {ready_count} of {len(games)} ready")
+            self.top_status.set("Review games")
             self.status_dot.configure(foreground=self.AMBER)
         else:
-            self.scan_state.set("✓ Scan complete")
-            noun = "game" if len(games) == 1 else "games"
-            self.scan_activity.set(f"Scan complete. {len(games)} {noun} detected.")
-            self.top_status.set(f"Ready — {len(games)} {noun} detected")
+            self.top_status.set("Ready")
             self.status_dot.configure(foreground=self.GREEN)
-        self.action_games.set(f"{ready_count} ready")
-        self.footer_status.set(f"{ready_count} game(s) ready")
+        self.footer_status.set("")
         self._set_game_checkboxes_enabled(True)
         self._update_selection_total()
         self._append_activity(
@@ -1232,10 +1162,6 @@ class GamePrepApp:
         if row:
             row.selected.set(selected)
         self._update_selection_total()
-        selected_games = [
-            game for game in self.games if normal_path(game.path) in self.selected_paths
-        ]
-        self.action_games.set(f"{len(selected_games)} selected")
         self._update_ready_state()
 
     def _set_all_selected(self, selected: bool) -> None:
@@ -1249,10 +1175,6 @@ class GamePrepApp:
             self.selected_paths.clear()
         for key, row in self.rows_by_path.items():
             row.selected.set(key in self.selected_paths)
-        selected_games = [
-            game for game in self.games if normal_path(game.path) in self.selected_paths
-        ]
-        self.action_games.set(f"{len(selected_games)} selected")
         self._update_selection_total()
         self._update_ready_state()
 
@@ -1263,25 +1185,34 @@ class GamePrepApp:
         known_sizes = [game.estimated_bytes for game in selected if game.estimated_bytes is not None]
         total = sum(known_sizes)
         unknown = len(selected) - len(known_sizes)
+        size_text = f"~{engine.human_size(total)}"
         if unknown:
-            size_text = f"at least {engine.human_size(total)} + {unknown} unknown"
-        else:
-            size_text = f"{engine.human_size(total)} estimated"
+            size_text += f" + {unknown} unknown"
         self.selection_total.set(
-            f"Selected: {len(selected)} game(s) • {size_text}"
+            f"{len(selected)} selected" + (f" • {size_text}" if selected else "")
         )
         self._sync_selection_controls()
         self._update_capacity_note()
 
     def _update_capacity_note(self) -> None:
-        if not self.selected_paths or self.destination_path is None:
-            self.capacity_note.set("Select games and a drive to compare space.")
+        if not self.selected_paths:
+            self.capacity_note.set("")
+            self.capacity_label.grid_remove()
             self.capacity_label.configure(foreground=self.MUTED)
+            return
+        if self.destination_path is None:
+            self.capacity_note.set("Drive unavailable" if self.destination_var.get().strip() else "")
+            if self.capacity_note.get():
+                self.capacity_label.grid()
+            else:
+                self.capacity_label.grid_remove()
+            self.capacity_label.configure(foreground=self.RED)
             return
         try:
             free = shutil.disk_usage(self.destination_path).free
         except OSError:
-            self.capacity_note.set("Drive space is unavailable. Check the connection.")
+            self.capacity_note.set("Can't read drive space")
+            self.capacity_label.grid()
             self.capacity_label.configure(foreground=self.RED)
             return
         selected = [game for game in self.games
@@ -1290,15 +1221,17 @@ class GamePrepApp:
         unknown = any(game.estimated_bytes is None for game in selected)
         if total > free:
             self.capacity_note.set(
-                f"Space warning: {engine.human_size(total)} selected, "
-                f"{engine.human_size(free)} free. Games that cannot fit will be skipped."
+                f"Low space: {engine.human_size(total)} selected, "
+                f"{engine.human_size(free)} free. Some games won't fit."
             )
+            self.capacity_label.grid()
             self.capacity_label.configure(foreground=self.AMBER)
         else:
-            suffix = " (some sizes unknown)" if unknown else ""
-            self.capacity_note.set(
-                f"{engine.human_size(total)} selected • {engine.human_size(free)} free{suffix}"
-            )
+            self.capacity_note.set("Some sizes unknown" if unknown else "")
+            if unknown:
+                self.capacity_label.grid()
+            else:
+                self.capacity_label.grid_remove()
             self.capacity_label.configure(foreground=self.MUTED)
 
     def _show_game_detail(self, key: str) -> None:
@@ -1311,8 +1244,7 @@ class GamePrepApp:
             return
         raw = self.source_var.get().strip().strip('"')
         if not raw or normal_path(raw) != self.scanned_source:
-            self.action_games.set("Rescan required")
-            self.top_status.set("Source changed — rescan to update the game list")
+            self.top_status.set("Source changed — rescan")
             self.status_dot.configure(foreground=self.AMBER)
         self._update_ready_state()
 
@@ -1320,39 +1252,16 @@ class GamePrepApp:
         self.scanning = False
         self.rescan_button.configure(state="normal")
         self.browse_button.configure(state="normal")
-        self.scan_state.set("Scan failed")
-        self.scan_activity.set(error)
-        self.top_status.set("Could not scan the selected source")
-        self.footer_status.set("No games ready")
+        self.top_status.set("Scan failed")
+        self.footer_status.set("")
         self.status_dot.configure(foreground=self.RED)
         self._append_activity(f"Scan failed for {source}: {error}")
+        self._show_empty_games("Choose another folder or file")
         self._update_ready_state()
-        messagebox.showerror("Could not scan games", error)
+        messagebox.showerror("Scan failed", error)
 
     def _render_summary(self, games: list[DetectedGame]) -> None:
-        for child in self.summary_breakdown.winfo_children():
-            child.destroy()
-        self.summary_total.set(
-            "No games detected" if not games else
-            f"{len(games)} {'game' if len(games) == 1 else 'games'} detected"
-        )
-        for row, (label, count) in enumerate(summarize_games(games)):
-            ttk.Label(self.summary_breakdown, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Label(
-                self.summary_breakdown,
-                text=str(count),
-                font=("Segoe UI", 10, "bold"),
-            ).grid(row=row, column=1, padx=(16, 0), sticky="e")
-        problems = sum(game.status != "Ready" for game in games)
-        row = len(summarize_games(games))
-        ttk.Label(self.summary_breakdown, text="Unsupported items").grid(
-            row=row, column=0, pady=(5, 0), sticky="w"
-        )
-        ttk.Label(
-            self.summary_breakdown,
-            text=str(problems),
-            font=("Segoe UI", 10, "bold"),
-        ).grid(row=row, column=1, padx=(16, 0), pady=(5, 0), sticky="e")
+        self.summary_total.set(f"{len(games)} found" if games else "")
 
     def refresh_drives(self) -> None:
         if self.running:
@@ -1373,25 +1282,14 @@ class GamePrepApp:
         path = choice.path if choice else Path(raw.strip('"')) if raw else None
         self.destination_path = None
         if path is None or not path.is_dir():
-            self.drive_name.set("—")
-            self.drive_free.set("—")
-            self.action_destination.set("Not selected")
             self._update_ready_state()
             return
         try:
-            usage = shutil.disk_usage(path)
+            shutil.disk_usage(path)
         except OSError:
-            self.drive_name.set("Unavailable")
-            self.drive_free.set("—")
-            self.action_destination.set("Not selected")
             self._update_ready_state()
             return
         self.destination_path = path.resolve()
-        filesystem = choice.filesystem if choice else (engine.drive_format(path) or "Unknown format")
-        self.drive_name.set(f"{path.anchor or path} ({filesystem})")
-        self.drive_free.set(f"{engine.human_size(usage.free)} of {engine.human_size(usage.total)}")
-        self.drive_destination.set("Automatic")
-        self.action_destination.set(str(self.destination_path))
         self._update_ready_state()
 
     def _update_ready_state(self) -> None:
@@ -1428,12 +1326,12 @@ class GamePrepApp:
             game for game in self.games if normal_path(game.path) in self.selected_paths
         ]
         if not selected_games:
-            messagebox.showinfo("Choose games", "Select at least one game to prepare and move.")
+            messagebox.showinfo("Choose games", "Select a game.")
             return
         if any(game.status != "Ready" for game in selected_games):
             messagebox.showwarning(
-                "Resolve scan problems",
-                "Unselect items that need attention before preparation can begin.",
+                "Review games",
+                "Untick games marked for review.",
             )
             return
         source = Path(self.source_var.get().strip().strip('"')).resolve()
@@ -1442,14 +1340,15 @@ class GamePrepApp:
             game.estimated_bytes or 0 for game in selected_games
         )
         unknown_sizes = sum(game.estimated_bytes is None for game in selected_games)
-        size_summary = engine.human_size(selected_size)
+        size_summary = f"~{engine.human_size(selected_size)}"
         if unknown_sizes:
-            size_summary += f" plus {unknown_sizes} unknown size(s)"
+            size_summary += f" + {unknown_sizes} unknown"
+        game_noun = "game" if len(selected_games) == 1 else "games"
         confirmed = messagebox.askokcancel(
-            "Prepare and move games",
-            f"Prepare {len(selected_games)} selected game(s) ({size_summary} estimated) "
-            f"and move them to:\n\n{destination}\n\n"
-            "Source files will remain unchanged. Existing conflicts will not be overwritten.",
+            "Start transfer?",
+            f"{len(selected_games)} {game_noun} • {size_summary}\n"
+            f"To: {destination}\n\n"
+            "Sources stay unchanged. Existing files won't be overwritten.",
             icon="info",
         )
         if not confirmed:
@@ -1465,15 +1364,14 @@ class GamePrepApp:
         self.current_input_count = len(selected_games)
         self.progress_value.set(0)
         self.progress_text.set("0%")
-        self.start_button.configure(text="Cancel transfer", state="normal")
-        self.options_button.configure(state="disabled")
+        self.start_button.configure(text="Cancel", state="normal")
         self.source_entry.configure(state="disabled")
         self.browse_button.configure(state="disabled")
         self.rescan_button.configure(state="disabled")
         self.destination_combo.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
-        self.top_status.set(f"Preparing 0 of {len(selected_games)} games")
-        self.footer_status.set("Task running")
+        self.top_status.set(f"Preparing 0/{len(selected_games)}")
+        self.footer_status.set("")
         self.status_dot.configure(foreground=self.BLUE)
         self._set_game_checkboxes_enabled(False)
         for game in selected_games:
@@ -1564,16 +1462,15 @@ class GamePrepApp:
         if not self.running or self.cancel_event is None or self.cancel_event.is_set():
             return
         if not messagebox.askyesno(
-            "Cancel the task?",
-            "The current preparation or copy step will stop safely.\n\n"
-            "Files already completed will remain on the destination.",
+            "Cancel transfer?",
+            "Current step stops. Completed games stay on the drive.",
             icon="warning",
         ):
             return
         self.cancel_event.set()
         self.start_button.configure(text="Cancelling…", state="disabled")
-        self.top_status.set("Cancelling safely…")
-        self.footer_status.set("Cancellation requested")
+        self.top_status.set("Cancelling…")
+        self.footer_status.set("")
         self.status_dot.configure(foreground=self.AMBER)
         self._append_activity("Cancellation requested. Cleaning up the current step…")
 
@@ -1613,7 +1510,7 @@ class GamePrepApp:
             name = str(payload.get("name", "game"))
             self._set_row_status(row, "Checking")
             self.top_status.set(
-                f"Checking game {self.current_input_number} of {self.current_input_count}: {name}"
+                f"Checking {self.current_input_number}/{self.current_input_count}"
             )
             self._append_activity(f"Checking {name}")
             self._set_progress((self.current_input_number - 1) / max(1, self.current_input_count) * 100)
@@ -1685,7 +1582,7 @@ class GamePrepApp:
                 self.footer_status.set(detail)
                 self._append_activity(f"{name} failed — {label}. {detail}")
             else:
-                self.top_status.set(f"Processed {handled} of {len(self.run_games)} games")
+                self.top_status.set(f"Processed {handled}/{len(self.run_games)}")
                 name = str(payload.get("name") or "Game")
                 self._append_activity(f"{name}: {label}")
             self.active_row = None
@@ -1769,7 +1666,6 @@ class GamePrepApp:
         self.last_report_path = Path(str(event["report_path"])) if event.get("report_path") else None
         self.last_log_path = Path(str(event["log_path"])) if event.get("log_path") else None
         self.start_button.configure(text="Prepare & move")
-        self.options_button.configure(state="normal")
         self.source_entry.configure(state="normal")
         self.browse_button.configure(state="normal")
         self.rescan_button.configure(state="normal")
@@ -1790,15 +1686,15 @@ class GamePrepApp:
                     continue
                 if key not in self.completed_inputs:
                     self._set_row_status(key, "Cancelled")
-            self.top_status.set("Task cancelled")
-            self.footer_status.set("Cancelled safely")
+            self.top_status.set("Cancelled")
+            self.footer_status.set("")
             self.status_dot.configure(foreground=self.AMBER)
             self._append_activity("Task cancelled. Completed files were left in place.")
             if not self.close_when_finished:
                 self._show_run_summary(
-                    title="Task cancelled",
+                    title="Cancelled",
                     headline="Transfer cancelled",
-                    description="The task stopped safely. Completed games remain on the drive.",
+                    description="Completed games stay on the drive.",
                     tone="warning",
                     transferred=transferred,
                     skipped=skipped,
@@ -1806,17 +1702,15 @@ class GamePrepApp:
                 )
         elif int(event.get("exit_code", 1) or 0) == 0:
             self._set_progress(100)
-            self.top_status.set(
-                f"Finished — {transferred} transferred, {skipped} already present"
-            )
-            self.footer_status.set("Task complete")
+            self.top_status.set("Complete")
+            self.footer_status.set("")
             self.status_dot.configure(foreground=self.GREEN)
             self._append_activity("All selected games have been processed.")
             if not self.close_when_finished:
                 self._show_run_summary(
-                    title="Preparation complete",
-                    headline="All selected games are ready",
-                    description="Every transferred file passed SHA-256 verification.",
+                    title="Complete",
+                    headline="Transfer complete",
+                    description="Files verified.",
                     tone="success",
                     transferred=transferred,
                     skipped=skipped,
@@ -1826,14 +1720,15 @@ class GamePrepApp:
             reasons = {reason for _, reason, _ in self.failed_game_labels}
             reason_text = next(iter(reasons)) if len(reasons) == 1 else "See game statuses"
             self.top_status.set(f"{failed} failed — {reason_text}")
-            self.footer_status.set(f"Finished with {failed} failed game(s)")
+            self.footer_status.set("")
             self.status_dot.configure(foreground=self.RED)
             self._append_activity(f"Finished: {failed} game(s) failed. {reason_text}.")
             if not self.close_when_finished:
                 self._show_run_summary(
-                    title="Finished with errors",
-                    headline=f"{failed} game(s) need attention",
-                    description="Other selected games continued normally.",
+                    title="Transfer errors",
+                    headline=f"{failed} failed" if failed else "Transfer failed",
+                    description=("Other games continued." if transferred or skipped
+                                 else "See log for details."),
                     tone="error",
                     transferred=transferred,
                     skipped=skipped,
@@ -1857,11 +1752,13 @@ class GamePrepApp:
         failed: int,
         failures: list[tuple[str, str, str]] | None = None,
     ) -> None:
+        failures = failures or []
         popup = tk.Toplevel(self.root)
         popup.title(title)
         screen_height = popup.winfo_screenheight()
-        popup.geometry(f"760x{min(650, max(480, screen_height - 120))}")
-        popup.minsize(600, 440)
+        popup.geometry(f"760x{min(650, max(480, screen_height - 120))}"
+                       if failures else "760x300")
+        popup.minsize(600, 440 if failures else 260)
         popup.configure(background=self.BG)
         popup.transient(self.root)
         popup.grab_set()
@@ -1878,7 +1775,7 @@ class GamePrepApp:
         shell = ttk.Frame(popup, padding=18, style="Shell.TFrame")
         shell.grid(row=0, column=0, sticky="nsew")
         shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(3, weight=1)
+        shell.rowconfigure(3, weight=1 if failures else 0)
 
         hero = ttk.Frame(shell, padding=(18, 16), style="Card.TFrame")
         hero.grid(row=0, column=0, sticky="ew")
@@ -1897,7 +1794,7 @@ class GamePrepApp:
         stats.grid(row=1, column=0, sticky="ew", pady=(12, 12))
         for column, (label, value, color) in enumerate((
             ("Transferred", transferred, self.GREEN),
-            ("Already present", skipped, self.BLUE),
+            ("Existing", skipped, self.BLUE),
             ("Failed", failed, self.RED if failed else self.MUTED),
         )):
             stats.columnconfigure(column, weight=1)
@@ -1908,13 +1805,11 @@ class GamePrepApp:
             tk.Label(tile, text=str(value), background=self.SURFACE,
                      foreground=color, font=("Segoe UI Semibold", 18)).pack(anchor="w")
 
-        failures = failures or []
         list_header = ttk.Frame(shell, style="Shell.TFrame")
         list_header.grid(row=2, column=0, sticky="ew", pady=(0, 7))
         ttk.Label(
             list_header,
-            text=(f"Games needing attention  ·  {len(failures)}" if failures
-                  else "Run details"),
+            text=f"Failed games ({len(failures)})",
             style="ShellHeading.TLabel",
         ).pack(side="left")
 
@@ -1960,17 +1855,12 @@ class GamePrepApp:
                 for child in (card, *card.winfo_children()):
                     child.bind("<MouseWheel>", scroll_failure_list)
         else:
-            note = "No failed games were reported."
-            if self.last_report_path:
-                note = "The run report contains the complete summary."
-            ttk.Label(rows, text=note, style="Muted.TLabel", padding=12).grid(
-                row=0, column=0, sticky="w")
+            list_header.grid_remove()
+            list_area.grid_remove()
 
         footer = ttk.Frame(shell, style="Shell.TFrame")
         footer.grid(row=4, column=0, sticky="ew", pady=(12, 0))
         footer.columnconfigure(0, weight=1)
-        ttk.Label(footer, text="Full details are available in the saved report and log.",
-                  style="Shell.TLabel", wraplength=340).grid(row=0, column=0, sticky="w")
         actions = ttk.Frame(footer, style="Shell.TFrame")
         actions.grid(row=0, column=1, sticky="e")
         if self.last_report_path:
@@ -2057,7 +1947,7 @@ class GamePrepApp:
             return
 
         popup = tk.Toplevel(self.root)
-        popup.title(f"Activity history — {APP_NAME}")
+        popup.title(f"History — {APP_NAME}")
         popup.geometry("820x550")
         popup.minsize(620, 360)
         popup.configure(background=self.BG)
@@ -2070,16 +1960,11 @@ class GamePrepApp:
         header.columnconfigure(0, weight=1)
         ttk.Label(
             header,
-            text="Activity history",
+            text="History",
             style="Title.TLabel",
         ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            header,
-            text="Key steps and errors only. Detailed technical logs are saved separately.",
-            style="Shell.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
         ttk.Button(header, text="Copy all", command=self.copy_activity).grid(
-            row=0, column=1, rowspan=2, padx=(12, 0)
+            row=0, column=1, padx=(12, 0)
         )
 
         terminal_frame = ttk.Frame(popup, padding=(20, 0, 20, 10), style="Shell.TFrame")
@@ -2112,9 +1997,9 @@ class GamePrepApp:
         footer = ttk.Frame(popup, padding=(20, 0, 20, 16), style="Shell.TFrame")
         footer.grid(row=2, column=0, sticky="ew")
         footer.columnconfigure(2, weight=1)
-        ttk.Button(footer, text="Open reports folder", command=self.open_reports_folder).grid(
+        ttk.Button(footer, text="Open reports", command=self.open_reports_folder).grid(
             row=0, column=0, sticky="w")
-        ttk.Button(footer, text="Open diagnostic logs", command=self.open_logs_folder).grid(
+        ttk.Button(footer, text="Open logs", command=self.open_logs_folder).grid(
             row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Button(footer, text="Close", command=self._close_activity_window).grid(
             row=0, column=2, sticky="e"
@@ -2159,23 +2044,22 @@ class GamePrepApp:
         messagebox.showinfo(
             f"About {APP_NAME}",
             f"{APP_NAME} v{engine.VERSION}\n\n"
-            "Detects supported Xbox games, prepares them, and moves each one "
-            "to the correct location on locally mounted Xbox 360 storage.\n\n"
-            "It does not format or partition drives.",
+            "Prepares Xbox games for a local drive.\n"
+            "Does not format drives.",
         )
 
     def on_close(self) -> None:
         if self.running:
             if messagebox.askyesno(
-                "Task in progress",
-                "Cancel the current task and close after cleanup finishes?",
+                "Transfer running",
+                "Cancel transfer and close when safe?",
                 icon="warning",
             ):
                 self.close_when_finished = True
                 if self.cancel_event is not None:
                     self.cancel_event.set()
                 self.start_button.configure(text="Cancelling…", state="disabled")
-                self.top_status.set("Cancelling safely…")
+                self.top_status.set("Cancelling…")
             return
         self.root.destroy()
 

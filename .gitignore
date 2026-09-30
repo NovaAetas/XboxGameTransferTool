@@ -24,6 +24,8 @@ build/theme-work-*/
 build/alpha-dist-*/
 build/alpha-work-*/
 build/alpha-assets-*/
+build/copy-dist-*/
+build/copy-work-*/
 build/candidate-*/
 dist/
 
